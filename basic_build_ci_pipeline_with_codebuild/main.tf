@@ -1,3 +1,6 @@
+#############################################
+# Terraform & Providers
+#############################################
 terraform {
   required_providers {
     aws = {
@@ -17,20 +20,39 @@ terraform {
 
 provider "local" {}
 
-# Ensure local directory exists
-resource "null_resource" "create_repo_folder" {
-  provisioner "local-exec" {
-    command = "mkdir -p ${path.module}/my-repo-contents/app"
-  }
+provider "aws" {
+  region = "ap-southeast-3"
 }
 
+#############################################
+# Variables & Locals
+#############################################
 variable "greeting_text" {
   type        = string
   default     = "Hello!"
   description = "The greeting text to display in hello.html"
 }
 
-# Create hello.html in the local folder "my-repo-contents"
+locals {
+  combined_sha = sha256(
+    "${local_file.hello_page.content}${local_file.buildspec.content}${local_file.app_main.content}${local_file.app_test.content}"
+  )
+}
+
+#############################################
+# Local Directory Setup
+#############################################
+# Ensure local directory exists for files to push
+resource "null_resource" "create_repo_folder" {
+  provisioner "local-exec" {
+    command = "mkdir -p ${path.module}/my-repo-contents/app"
+  }
+}
+
+#############################################
+# Local Files
+#############################################
+# 1. hello.html
 resource "local_file" "hello_page" {
   depends_on = [null_resource.create_repo_folder]
   filename   = "${path.module}/my-repo-contents/hello.html"
@@ -50,7 +72,7 @@ resource "local_file" "hello_page" {
 EOF
 }
 
-# Create buildspec.yml in the same local folder
+# 2. buildspec.yml
 resource "local_file" "buildspec" {
   depends_on = [null_resource.create_repo_folder]
   filename   = "${path.module}/my-repo-contents/buildspec.yml"
@@ -75,7 +97,7 @@ reports:
 EOF
 }
 
-# Create a sample Python application
+# 3. app/main.py
 resource "local_file" "app_main" {
   depends_on = [null_resource.create_repo_folder]
   filename   = "${path.module}/my-repo-contents/app/main.py"
@@ -88,7 +110,7 @@ if __name__ == "__main__":
 EOF
 }
 
-# Create a pytest unit test for the application
+# 4. app/test_main.py
 resource "local_file" "app_test" {
   depends_on = [null_resource.create_repo_folder]
   filename   = "${path.module}/my-repo-contents/app/test_main.py"
@@ -104,23 +126,17 @@ def test_add_negative():
 EOF
 }
 
-# Configure AWS provider for Jakarta region
-provider "aws" {
-  region = "ap-southeast-3"
-}
-
-# Create (or reference) a CodeCommit repository named "my-repo"
+#############################################
+# CodeCommit Repository
+#############################################
 resource "aws_codecommit_repository" "my_repo" {
   repository_name = "my-repo"
   description     = "Repository for my application code."
 }
 
-# Combine checksums of hello.html and buildspec.yml so re-run triggers when either changes
-locals {
-  combined_sha = sha256("${local_file.hello_page.content}${local_file.buildspec.content}${local_file.app_main.content}${local_file.app_test.content}")
-}
-
-# Push hello.html and buildspec.yml into CodeCommit via AWS CLI
+#############################################
+# Push Local Files to CodeCommit
+#############################################
 resource "null_resource" "push_files" {
   depends_on = [
     null_resource.create_repo_folder,
@@ -129,7 +145,7 @@ resource "null_resource" "push_files" {
     local_file.app_main,
     local_file.app_test
   ]
-  # Re-run when either file content changes, or always (due to timestamp)
+
   triggers = {
     combined_sha = local.combined_sha
     always_run   = timestamp()
@@ -172,25 +188,22 @@ push_file() {
   fi
 }
 
-# Push hello.html
+# Push all files
 push_file "hello.html" "${path.module}/my-repo-contents/hello.html"
-
-# Push buildspec.yml
 push_file "buildspec.yml" "${path.module}/my-repo-contents/buildspec.yml"
-
-# Push application code and tests
 push_file "app/main.py" "${path.module}/my-repo-contents/app/main.py"
 push_file "app/test_main.py" "${path.module}/my-repo-contents/app/test_main.py"
 EOF
   }
 }
 
-# Generate a random suffix for the CodePipeline artifact bucket
+#############################################
+# S3 Bucket for Pipeline Artifacts
+#############################################
 resource "random_id" "pipeline_artifact_id" {
   byte_length = 4
 }
 
-# Create an S3 bucket for CodePipeline artifacts
 resource "aws_s3_bucket" "pipeline_artifacts" {
   bucket        = "pipeline-artifacts-${random_id.pipeline_artifact_id.hex}"
   force_destroy = true
@@ -200,7 +213,9 @@ resource "aws_s3_bucket" "pipeline_artifacts" {
   }
 }
 
-# IAM role for CodePipeline
+#############################################
+# IAM: CodePipeline Role & Policy
+#############################################
 data "aws_iam_policy_document" "codepipeline_assume_role" {
   statement {
     effect = "Allow"
@@ -217,7 +232,6 @@ resource "aws_iam_role" "codepipeline_role" {
   assume_role_policy = data.aws_iam_policy_document.codepipeline_assume_role.json
 }
 
-# Attach a policy to allow CodePipeline to interact with CodeCommit, CodeBuild, and S3 (artifact bucket)
 resource "aws_iam_role_policy" "codepipeline_policy" {
   name = "codepipeline-policy"
   role = aws_iam_role.codepipeline_role.id
@@ -253,24 +267,22 @@ resource "aws_iam_role_policy" "codepipeline_policy" {
           "s3:GetObjectVersion",
           "s3:PutObject"
         ]
-        Resource = [
-          "${aws_s3_bucket.pipeline_artifacts.arn}/*"
-        ]
+        Resource = ["${aws_s3_bucket.pipeline_artifacts.arn}/*"]
       },
       {
         Effect = "Allow"
         Action = [
           "s3:ListBucket"
         ]
-        Resource = [
-          aws_s3_bucket.pipeline_artifacts.arn
-        ]
+        Resource = [aws_s3_bucket.pipeline_artifacts.arn]
       }
     ]
   })
 }
 
-# IAM role for CodeBuild
+#############################################
+# IAM: CodeBuild Role & Policy
+#############################################
 data "aws_iam_policy_document" "codebuild_assume" {
   statement {
     effect = "Allow"
@@ -287,7 +299,6 @@ resource "aws_iam_role" "codebuild_role" {
   assume_role_policy = data.aws_iam_policy_document.codebuild_assume.json
 }
 
-# Policy for CodeBuild: allow CloudWatch logs, CodeCommit read, and S3 read
 resource "aws_iam_role_policy" "codebuild_policy" {
   name = "codebuild-policy"
   role = aws_iam_role.codebuild_role.id
@@ -321,7 +332,9 @@ resource "aws_iam_role_policy" "codebuild_policy" {
   })
 }
 
-# CodeBuild project that simply echoes "Hello, CodeBuild!"
+#############################################
+# CodeBuild Project
+#############################################
 resource "aws_codebuild_project" "hello_build" {
   name        = "hello-codebuild-project"
   description = "Simple CodeBuild project to echo a hello message"
@@ -340,6 +353,7 @@ resource "aws_codebuild_project" "hello_build" {
     compute_type = "BUILD_GENERAL1_LARGE"
     image        = "aws/codebuild/standard:7.0"
     type         = "LINUX_CONTAINER"
+
     environment_variable {
       name  = "GREETING_TEXT"
       value = var.greeting_text
@@ -349,7 +363,9 @@ resource "aws_codebuild_project" "hello_build" {
   service_role = aws_iam_role.codebuild_role.arn
 }
 
-# CodePipeline: Source (CodeCommit) → Build (CodeBuild)
+#############################################
+# CodePipeline
+#############################################
 resource "aws_codepipeline" "build_pipeline" {
   name     = "build-pipeline"
   role_arn = aws_iam_role.codepipeline_role.arn
@@ -393,9 +409,10 @@ resource "aws_codepipeline" "build_pipeline" {
   }
 }
 
-# Always execute the CodePipeline after apply
+#############################################
+# Auto-Trigger Pipeline After Apply
+#############################################
 resource "null_resource" "execute_pipeline" {
-  # Ensures this runs on every apply
   triggers = {
     always = timestamp()
   }
@@ -404,7 +421,5 @@ resource "null_resource" "execute_pipeline" {
     command = "aws codepipeline start-pipeline-execution --name ${aws_codepipeline.build_pipeline.name} --region ap-southeast-3"
   }
 
-  depends_on = [
-    aws_codepipeline.build_pipeline
-  ]
+  depends_on = [aws_codepipeline.build_pipeline]
 }
