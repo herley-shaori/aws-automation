@@ -392,23 +392,18 @@ resource "aws_codepipeline" "html_pipeline" {
   }
 }
 
-resource "aws_instance" "web" {
-  count         = 2
-  ami           = local.ami_id
+resource "aws_launch_template" "web_lt" {
+  name_prefix   = "web-lt-"
+  image_id      = local.ami_id
   instance_type = "t3.micro"
-  subnet_id     = aws_subnet.public.id
+
+  iam_instance_profile {
+    name = aws_iam_instance_profile.codedeploy_instance_profile.name
+  }
+
   vpc_security_group_ids = [aws_security_group.public_sg.id]
-  associate_public_ip_address = true
-  iam_instance_profile = aws_iam_instance_profile.codedeploy_instance_profile.name
-  tags = {
-    Name  = "web-${count.index + 1}"
-    Fleet = "blue"
-  }
-  metadata_options {
-    http_endpoint = "enabled"
-    http_tokens   = "optional"
-  }
-  user_data = <<-EOF
+
+  user_data = base64encode(<<-EOF
     #!/bin/bash
     set -e
     sudo yum update -y
@@ -427,7 +422,71 @@ resource "aws_instance" "web" {
     sudo systemctl start httpd
     sudo systemctl status httpd
     echo '<html><body><h1>Hello from EC2!</h1></body></html>' | sudo tee /var/www/html/index.html
-  EOF
+    EOF
+  )
+
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "optional"
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name  = "web-asg"
+      Fleet = "blue"
+    }
+  }
+}
+
+resource "aws_autoscaling_group" "web_asg" {
+  name                      = "web-asg"
+  min_size                  = 1
+  desired_capacity          = 2
+  max_size                  = 10
+  vpc_zone_identifier       = [aws_subnet.public.id, aws_subnet.public2.id]
+  target_group_arns         = [aws_lb_target_group.app_tg.arn]
+
+  launch_template {
+    id      = aws_launch_template.web_lt.id
+    version = "$Latest"
+  }
+
+  health_check_type         = "ELB"
+  health_check_grace_period = 300
+
+  tag {
+    key                 = "Name"
+    value               = "web-asg"
+    propagate_at_launch = true
+  }
+
+  tag {
+    key                 = "Fleet"
+    value               = "blue"
+    propagate_at_launch = true
+  }
+}
+
+resource "aws_lb_target_group" "app_tg" {
+  name     = "bluegreen-app-tg"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.main.id
+
+  health_check {
+    path                = "/"
+    protocol            = "HTTP"
+    matcher             = "200-399"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
+
+  tags = {
+    Name = "bluegreen-app-tg"
+  }
 }
 
 resource "aws_lb" "app_lb" {
@@ -442,25 +501,6 @@ resource "aws_lb" "app_lb" {
   }
 }
 
-resource "aws_lb_target_group" "app_tg" {
-  name     = "bluegreen-app-tg"
-  port     = 80
-  protocol = "HTTP"
-  vpc_id   = aws_vpc.main.id
-  health_check {
-    path                = "/"
-    protocol            = "HTTP"
-    matcher             = "200-399"
-    interval            = 30
-    timeout             = 5
-    healthy_threshold   = 2
-    unhealthy_threshold = 2
-  }
-  tags = {
-    Name = "bluegreen-app-tg"
-  }
-}
-
 resource "aws_lb_listener" "app_listener" {
   load_balancer_arn = aws_lb.app_lb.arn
   port              = 80
@@ -469,13 +509,6 @@ resource "aws_lb_listener" "app_listener" {
     type             = "forward"
     target_group_arn = aws_lb_target_group.app_tg.arn
   }
-}
-
-resource "aws_lb_target_group_attachment" "web" {
-  count            = 2
-  target_group_arn = aws_lb_target_group.app_tg.arn
-  target_id        = aws_instance.web[count.index].id
-  port             = 80
 }
 
 data "aws_availability_zones" "available" {}
