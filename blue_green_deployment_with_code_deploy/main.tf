@@ -43,31 +43,34 @@ resource "null_resource" "init_codecommit_repo" {
 resource "null_resource" "create_hello_world_html" {
   depends_on = [null_resource.init_codecommit_repo]
   triggers = {
-    always_run = timestamp()
+    always_run = uuid()
   }
   provisioner "local-exec" {
     command = <<EOT
-      echo '<!DOCTYPE html><html><head><title>Hello</title></head><body><h1>Hello, World one!</h1></body></html>' > hello.html
+      echo '<!DOCTYPE html><html><head><title>Hello</title></head><body><h1>Hello, World two!</h1></body></html>' > index.html
       PARENT_ID=$(aws codecommit get-branch --repository-name my-demo-repo --branch-name master --query 'branch.commitId' --output text)
       aws codecommit put-file \
         --repository-name my-demo-repo \
         --branch-name master \
-        --file-content fileb://hello.html \
-        --file-path hello.html \
+        --file-content fileb://index.html \
+        --file-path index.html \
         --parent-commit-id $PARENT_ID \
-        --commit-message "Update hello.html via Terraform" || true
+        --commit-message "Update index.html via Terraform" || true
     EOT
   }
 }
 
 resource "null_resource" "create_appspec_and_scripts" {
+  triggers = {
+    always_run = uuid()
+  }
   provisioner "local-exec" {
     command = <<EOT
       cat > appspec.yml <<EOF
 version: 0.0
 os: linux
 files:
-  - source: hello.html
+  - source: index.html
     destination: /var/www/html/
 hooks:
   AfterInstall:
@@ -78,13 +81,10 @@ EOF
       cat > copy_html.sh <<EOF
 #!/bin/bash
 set -e
-SRC=$(find /opt/codedeploy-agent/deployment-root/ -type f -name hello.html | head -n1)
-if [ -f "$SRC" ]; then
-  cp -f "$SRC" /var/www/html/hello.html
-else
-  echo "hello.html not found in deployment archive" >&2
-  exit 1
-fi
+DEPLOYMENT_ARCHIVE="/opt/codedeploy-agent/deployment-root/\$DEPLOYMENT_GROUP_ID/\$DEPLOYMENT_ID/deployment-archive"
+echo "\$(date) \$RANDOM" >> /tmp/codedeploy_revision_marker.txt
+mkdir -p /var/www/html
+cp -f "\$DEPLOYMENT_ARCHIVE/index.html" /var/www/html/index.html
 EOF
       chmod +x copy_html.sh
       aws codecommit put-file \
@@ -170,6 +170,22 @@ resource "aws_security_group" "public_sg" {
     from_port   = -1
     to_port     = -1
     protocol    = "icmp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTPS"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
@@ -353,6 +369,10 @@ resource "aws_instance" "web" {
     sudo yum install -y $AGENT_URL
     sudo systemctl enable codedeploy-agent
     sudo systemctl start codedeploy-agent
+    sudo yum install -y httpd
+    sudo systemctl enable httpd
+    sudo systemctl start httpd
+    sudo systemctl status httpd
   EOF
 }
 
