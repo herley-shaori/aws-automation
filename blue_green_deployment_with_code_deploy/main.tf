@@ -47,7 +47,7 @@ resource "null_resource" "create_hello_world_html" {
   }
   provisioner "local-exec" {
     command = <<EOT
-      echo '<!DOCTYPE html><html><head><title>Hello</title></head><body><h1>Hello, World two!</h1></body></html>' > index.html
+      echo '<!DOCTYPE html><html><head><title>Hello</title></head><body><h1>Hello, World!</h1></body></html>' > index.html
       PARENT_ID=$(aws codecommit get-branch --repository-name my-demo-repo --branch-name master --query 'branch.commitId' --output text)
       aws codecommit put-file \
         --repository-name my-demo-repo \
