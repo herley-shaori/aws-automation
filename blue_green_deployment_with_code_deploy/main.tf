@@ -99,27 +99,37 @@ mkdir -p /var/www/html
 cp -f "\$DEPLOYMENT_ARCHIVE/index.html" /var/www/html/index.html
 EOF
       chmod +x copy_html.sh
+      # Push index.html
       aws codecommit put-file \
         --repository-name my-demo-repo \
         --branch-name master \
-        --file-content fileb://appspec.yml \
-        --file-path appspec.yml \
-        --parent-commit-id $(aws codecommit get-branch --repository-name my-demo-repo --branch-name master --query 'branch.commitId' --output text) \
-        --commit-message "Add appspec.yml via Terraform" || true
-      aws codecommit put-file \
-        --repository-name my-demo-repo \
-        --branch-name master \
-        --file-content fileb://copy_html.sh \
-        --file-path copy_html.sh \
-        --parent-commit-id $(aws codecommit get-branch --repository-name my-demo-repo --branch-name master --query 'branch.commitId' --output text) \
-        --commit-message "Add copy_html.sh via Terraform" || true
-      aws codecommit put-file \
-        --repository-name my-demo-repo \
-        --branch-name master \
-        --file-content fileb://cleanup_html.sh \
-        --file-path cleanup_html.sh \
-        --parent-commit-id $(aws codecommit get-branch --repository-name my-demo-repo --branch-name master --query 'branch.commitId' --output text) \
-        --commit-message "Add cleanup_html.sh via Terraform" || true
+        --file-content fileb://index.html \
+        --file-path index.html \
+        --commit-message "Update index.html via Terraform" || true
+      # Push appspec.yml, copy_html.sh, cleanup_html.sh using robust logic
+      BRANCH_EXISTS=$(aws codecommit get-branch --repository-name my-demo-repo --branch-name master --query 'branch.branchName' --output text 2>/dev/null || echo "none")
+      if [ "$BRANCH_EXISTS" = "none" ]; then
+        # Initial commit with index.html
+        aws codecommit put-file \
+          --repository-name my-demo-repo \
+          --branch-name master \
+          --file-content fileb://index.html \
+          --file-path index.html \
+          --commit-message "Initial commit with index.html via Terraform"
+      fi
+      # Always get latest parent commit ID for each file
+      for FILE in appspec.yml copy_html.sh cleanup_html.sh; do
+        PARENT_ID=$(aws codecommit get-branch --repository-name my-demo-repo --branch-name master --query 'branch.commitId' --output text)
+        aws codecommit put-file \
+          --repository-name my-demo-repo \
+          --branch-name master \
+          --file-content fileb://$FILE \
+          --file-path $FILE \
+          --parent-commit-id $PARENT_ID \
+          --commit-message "Update $FILE via Terraform" || true
+      done
+      # Trigger CodePipeline after files are pushed
+      aws codepipeline start-pipeline-execution --name html-codedeploy-pipeline || true
     EOT
   }
   depends_on = [null_resource.create_hello_world_html]
