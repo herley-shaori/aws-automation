@@ -53,14 +53,25 @@ resource "local_file" "inline_lambda_code" {
   content  = <<EOF
 import json
 import boto3
+from botocore.exceptions import ClientError
 
 def lambda_handler(event, context):
+    # API Gateway HTTP API (v2.0) puts the request body as a string in event['body']
+    prompt = "hello world"
+    if "body" in event and event["body"]:
+        try:
+            body_json = json.loads(event["body"])
+            prompt = body_json.get("prompt", prompt)
+        except Exception:
+            pass
+    elif "prompt" in event:
+        prompt = event["prompt"]
     bedrock = boto3.client(
         "bedrock-runtime",
         region_name="ap-southeast-1"  # Singapore
     )
-    # Build the request body as required by Bedrock Claude Sonnet 4
-    body = {
+    model_id = "apac.anthropic.claude-sonnet-4-20250514-v1:0"
+    native_request = {
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": 200,
         "top_k": 250,
@@ -73,23 +84,27 @@ def lambda_handler(event, context):
                 "content": [
                     {
                         "type": "text",
-                        "text": event.get("prompt", "hello world")
+                        "text": prompt
                     }
                 ]
             }
         ]
     }
-    response = bedrock.invoke_model(
-        modelId="anthropic.claude-sonnet-4-20250514-v1:0",
-        contentType="application/json",
-        accept="application/json",
-        body=json.dumps(body)
-    )
-    result = response["body"].read().decode()
-    return {
-        'statusCode': 200,
-        'body': result
-    }
+    request = json.dumps(native_request)
+    try:
+        response = bedrock.invoke_model(modelId=model_id, body=request)
+        model_response = json.loads(response["body"].read())
+        response_text = model_response["content"][0]["text"]
+        return {
+            'statusCode': 200,
+            'body': response_text
+        }
+    except (ClientError, Exception) as e:
+        return {
+            'statusCode': 500,
+            'body': f"ERROR: Can't invoke '{model_id}'. Reason: {e}"
+        }
+
 EOF
   filename = "${path.module}/index.py"
 }
@@ -110,6 +125,40 @@ resource "aws_lambda_function" "hello_world" {
   runtime       = "python3.12"
   filename      = "inline_lambda.zip"
   source_code_hash = filebase64sha256("${path.module}/inline_lambda.zip")
+  timeout       = 60
 
   depends_on = [null_resource.zip_inline_lambda]
+}
+
+resource "aws_apigatewayv2_api" "lambda_api" {
+  name          = "bedrock-caller-api"
+  protocol_type = "HTTP"
+}
+
+resource "aws_apigatewayv2_integration" "lambda_integration" {
+  api_id                 = aws_apigatewayv2_api.lambda_api.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.hello_world.invoke_arn
+  integration_method     = "POST"
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "lambda_route" {
+  api_id    = aws_apigatewayv2_api.lambda_api.id
+  route_key = "POST /invoke"
+  target    = "integrations/${aws_apigatewayv2_integration.lambda_integration.id}"
+}
+
+resource "aws_apigatewayv2_stage" "lambda_stage" {
+  api_id      = aws_apigatewayv2_api.lambda_api.id
+  name        = "$default"
+  auto_deploy = true
+}
+
+resource "aws_lambda_permission" "apigw_invoke" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.hello_world.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.lambda_api.execution_arn}/*/*"
 }
