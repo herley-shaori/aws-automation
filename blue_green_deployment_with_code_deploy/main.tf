@@ -47,7 +47,7 @@ resource "null_resource" "create_hello_world_html" {
   }
   provisioner "local-exec" {
     command = <<EOT
-      echo '<!DOCTYPE html><html><head><title>Hello</title></head><body><h1>Hello, World!</h1></body></html>' > index.html
+      echo '<!DOCTYPE html><html><head><title>Hello</title></head><body><h1>Hello, World Test 2!</h1></body></html>' > index.html
       PARENT_ID=$(aws codecommit get-branch --repository-name my-demo-repo --branch-name master --query 'branch.commitId' --output text)
       aws codecommit put-file \
         --repository-name my-demo-repo \
@@ -73,11 +73,23 @@ files:
   - source: index.html
     destination: /var/www/html/
 hooks:
+  BeforeInstall:
+    - location: cleanup_html.sh
+      timeout: 60
+      runas: root
   AfterInstall:
     - location: copy_html.sh
       timeout: 180
       runas: root
 EOF
+      cat > cleanup_html.sh <<EOF
+#!/bin/bash
+set -e
+if [ -f /var/www/html/index.html ]; then
+  rm -f /var/www/html/index.html
+fi
+EOF
+      chmod +x cleanup_html.sh
       cat > copy_html.sh <<EOF
 #!/bin/bash
 set -e
@@ -101,6 +113,13 @@ EOF
         --file-path copy_html.sh \
         --parent-commit-id $(aws codecommit get-branch --repository-name my-demo-repo --branch-name master --query 'branch.commitId' --output text) \
         --commit-message "Add copy_html.sh via Terraform" || true
+      aws codecommit put-file \
+        --repository-name my-demo-repo \
+        --branch-name master \
+        --file-content fileb://cleanup_html.sh \
+        --file-path cleanup_html.sh \
+        --parent-commit-id $(aws codecommit get-branch --repository-name my-demo-repo --branch-name master --query 'branch.commitId' --output text) \
+        --commit-message "Add cleanup_html.sh via Terraform" || true
     EOT
   }
   depends_on = [null_resource.create_hello_world_html]
@@ -390,7 +409,7 @@ resource "aws_codepipeline" "html_pipeline" {
 resource "aws_launch_template" "web_lt" {
   name_prefix   = "web-lt-"
   image_id      = local.ami_id
-  instance_type = "t3.micro"
+  instance_type = "t3.2xlarge"
 
   iam_instance_profile {
     name = aws_iam_instance_profile.codedeploy_instance_profile.name
@@ -416,7 +435,7 @@ sudo yum install -y httpd
 sudo systemctl enable httpd
 sudo systemctl start httpd
 sudo systemctl status httpd
-echo "<html><body><h1>Hello from EC2!</h1></body></html>" | sudo tee /var/www/html/index.html
+echo "<html><body><h1>Placeholder</h1></body></html>" | sudo tee /var/www/html/index.html
 EOF
   )
 
