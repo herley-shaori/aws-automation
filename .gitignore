@@ -41,3 +41,5 @@ copy_html.sh
 index.html
 hello.html
 .idea
+*.py
+*.zip
