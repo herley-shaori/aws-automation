@@ -267,6 +267,8 @@ resource "aws_codedeploy_deployment_group" "dg" {
   app_name              = aws_codedeploy_app.app.name
   deployment_group_name = "html-app-one"
   service_role_arn      = aws_iam_role.codedeploy_service.arn
+  autoscaling_groups   = [aws_autoscaling_group.web_asg.name]
+
   deployment_style {
     deployment_type = "BLUE_GREEN"
     deployment_option = "WITH_TRAFFIC_CONTROL"
@@ -281,19 +283,12 @@ resource "aws_codedeploy_deployment_group" "dg" {
       wait_time_in_minutes = 0
     }
     green_fleet_provisioning_option {
-      action = "DISCOVER_EXISTING"
+      action = "COPY_AUTO_SCALING_GROUP"
     }
   }
   auto_rollback_configuration {
     enabled = true
     events  = ["DEPLOYMENT_FAILURE"]
-  }
-  ec2_tag_set {
-    ec2_tag_filter {
-      key   = "Fleet"
-      type  = "KEY_AND_VALUE"
-      value = "blue"
-    }
   }
   load_balancer_info {
     target_group_info {
@@ -403,26 +398,26 @@ resource "aws_launch_template" "web_lt" {
 
   vpc_security_group_ids = [aws_security_group.public_sg.id]
 
-  user_data = base64encode(<<-EOF
-    #!/bin/bash
-    set -e
-    sudo yum update -y
-    sudo yum install -y ruby wget
-    ARCH=$(uname -m)
-    if [ "$ARCH" = "x86_64" ]; then
-      AGENT_URL="https://aws-codedeploy-ap-southeast-3.s3.ap-southeast-3.amazonaws.com/latest/codedeploy-agent.noarch.rpm"
-    else
-      AGENT_URL="https://aws-codedeploy-ap-southeast-3.s3.ap-southeast-3.amazonaws.com/latest/codedeploy-agent.arm64.rpm"
-    fi
-    sudo yum install -y $AGENT_URL
-    sudo systemctl enable codedeploy-agent
-    sudo systemctl start codedeploy-agent
-    sudo yum install -y httpd
-    sudo systemctl enable httpd
-    sudo systemctl start httpd
-    sudo systemctl status httpd
-    echo '<html><body><h1>Hello from EC2!</h1></body></html>' | sudo tee /var/www/html/index.html
-    EOF
+  user_data = base64encode(<<EOF
+#!/bin/bash
+set -e
+sudo yum update -y
+sudo yum install -y ruby wget
+ARCH=$(uname -m)
+if [ "$ARCH" = "x86_64" ]; then
+  AGENT_URL="https://aws-codedeploy-ap-southeast-3.s3.ap-southeast-3.amazonaws.com/latest/codedeploy-agent.noarch.rpm"
+else
+  AGENT_URL="https://aws-codedeploy-ap-southeast-3.s3.ap-southeast-3.amazonaws.com/latest/codedeploy-agent.arm64.rpm"
+fi
+sudo yum install -y $AGENT_URL
+sudo systemctl enable codedeploy-agent
+sudo systemctl start codedeploy-agent
+sudo yum install -y httpd
+sudo systemctl enable httpd
+sudo systemctl start httpd
+sudo systemctl status httpd
+echo "<html><body><h1>Hello from EC2!</h1></body></html>" | sudo tee /var/www/html/index.html
+EOF
   )
 
   metadata_options {
